@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { riskColor } from "@/lib/risk";
 import type { LocationSpatialRisk, CellRiskEvaluation } from "@/lib/spatial-risk.service";
-import { ChevronUp, ShieldAlert, Satellite, CloudRain, Mountain, Info, Compass, Layers } from "lucide-react";
+import { ChevronUp, ShieldAlert, Satellite, CloudRain, Mountain, Info, Compass, Layers, Activity } from "lucide-react";
 
 interface Props {
   locationRisk?: LocationSpatialRisk | null;
@@ -52,7 +52,7 @@ export default function SpatialLocationRiskPanel({
 
   const isDeformProcessing = isCell
     ? cellRisk?.provenance.satellite_status === "PROCESSING"
-    : locationRisk?.components.satellite_deformation.status === "PROCESSING";
+    : (locationRisk?.components.satellite_deformation.status as string) === "PROCESSING";
 
   const deformVelocity = isCell
     ? cellRisk?.provenance.satellite_deformation?.los_velocity_mean_mm_year
@@ -169,7 +169,7 @@ export default function SpatialLocationRiskPanel({
             {t("spatial_risk.operational_score", "Operational Risk Score")}
           </div>
           <div className="flex items-baseline gap-1 my-1">
-            <span className={`text-4xl font-extrabold font-mono ${color.text}`}>
+            <span className="text-4xl font-extrabold font-mono" style={{ color }}>
               {score}
             </span>
             <span className="text-xs font-mono text-muted-foreground">/100</span>
@@ -217,7 +217,7 @@ export default function SpatialLocationRiskPanel({
             <span>{t("spatial_risk.static_susceptibility", "Terrain Susceptibility")}</span>
           </div>
           <div className="text-base font-bold font-mono text-foreground">
-            {staticSuscPct}%
+            {susceptibilityScore}%
           </div>
           <div className="text-[0.65rem] text-muted-foreground leading-tight">
             {isCell
@@ -360,7 +360,7 @@ export default function SpatialLocationRiskPanel({
           </p>
 
           <p className="text-[0.66rem] leading-relaxed text-muted-foreground/90 pt-0.5">
-            {t("spatial_risk.insar_option_a_notice", "Satellite InSAR Ground Motion: Evaluated independently under Option A (independent indicator) alongside active ML model v0.2-lr-trained without uncalibrated weight injection.")}
+            {t("spatial_risk.insar_option_a_notice", "Satellite InSAR Ground Motion: Evaluated independently under Option A (independent indicator) alongside active ML model v0.4-lr-trained without uncalibrated weight injection.")}
           </p>
 
           {!isCell && locationRisk && (

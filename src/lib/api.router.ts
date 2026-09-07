@@ -21,7 +21,7 @@ import {
   getAllInfrastructureGeoJSON,
   computeExposureSummary,
 } from "./infrastructure.service";
-import { ingestLiveRainfallImpl } from "./monitoring.functions";
+import { ingestLiveRainfallImpl } from "./monitoring.server";
 import { authenticateCronRequest } from "@/integrations/supabase/cron-auth";
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { getSatelliteLayerStatus, fetchSatelliteTile } from "./satellite.service";
@@ -441,7 +441,112 @@ export async function handleApiRequest(request: Request): Promise<Response | nul
       return jsonResponse(res, 200, cors);
     }
 
+    // 6c. Observation Review — Approve / Reject (VERIFIED_OFFICIAL, DISPATCHER, or ADMIN)
+    if (pathname === "/api/observations/review" && request.method === "POST") {
+      // Require authentication
+      const authHeader = request.headers.get("Authorization");
+      if (!authHeader) {
+        return errorResponse(
+          "Authentication required to review observations",
+          "UNAUTHORIZED",
+          401,
+          cors,
+        );
+      }
+
+      const { authenticateToken: authToken, verifyGroundObservation } = await import("./official-auth.service");
+      const profile = await authToken(authHeader);
+
+      // Role check: VERIFIED_OFFICIAL, DISPATCHER, or ADMIN only
+      const isAuthorized =
+        profile !== null &&
+        (profile.role === "VERIFIED_OFFICIAL" ||
+          profile.role === "DISPATCHER" ||
+          profile.role === "ADMIN");
+
+      if (!isAuthorized) {
+        return errorResponse(
+          "Forbidden: Only verified government officials, dispatchers, or administrators can review observations",
+          "FORBIDDEN",
+          403,
+          cors,
+        );
+      }
+
+      // Parse and validate request body
+      let body: {
+        observation_id?: unknown;
+        new_status?: unknown;
+        verification_notes?: unknown;
+        is_training_eligible?: unknown;
+      } = {};
+      try {
+        body = await request.json();
+      } catch {
+        return errorResponse("Malformed JSON request body", "INVALID_JSON", 400, cors);
+      }
+
+      const observationId = body.observation_id;
+      if (!observationId || (typeof observationId !== "string" && typeof observationId !== "number")) {
+        return errorResponse("observation_id is required", "MISSING_OBSERVATION_ID", 400, cors);
+      }
+
+      const newStatus = body.new_status;
+      if (newStatus !== "VERIFIED" && newStatus !== "REJECTED") {
+        return errorResponse(
+          "new_status must be 'VERIFIED' or 'REJECTED'",
+          "INVALID_STATUS",
+          400,
+          cors,
+        );
+      }
+
+      const verificationNotes =
+        typeof body.verification_notes === "string" ? body.verification_notes.trim() : "";
+
+      // REJECTED observations require a reason
+      if (newStatus === "REJECTED" && verificationNotes.length < 5) {
+        return errorResponse(
+          "A rejection reason (verification_notes, min 5 chars) is required when rejecting an observation",
+          "MISSING_REJECTION_REASON",
+          400,
+          cors,
+        );
+      }
+
+      const result = await verifyGroundObservation(
+        profile!,
+        String(observationId),
+        {
+          status: newStatus,
+          verificationNotes,
+          isTrainingEligible: Boolean(body.is_training_eligible),
+        },
+      );
+
+      if (!result.success) {
+        // Distinguish 404 from other errors
+        if (result.error?.includes("not found")) {
+          return errorResponse(result.error, "NOT_FOUND", 404, cors);
+        }
+        return errorResponse(result.error ?? "Review failed", "REVIEW_FAILED", 400, cors);
+      }
+
+      return jsonResponse(
+        {
+          ok: true,
+          observation_id: String(observationId),
+          new_status: newStatus,
+          reviewed_by: profile!.id,
+          reviewed_at: new Date().toISOString(),
+        },
+        200,
+        cors,
+      );
+    }
+
     // 7. Offline Field Observation Synchronization
+
     if (pathname === "/api/sync/observations" && request.method === "POST") {
       const clientKey = `sync_observations:${getClientIdentifier(request)}`;
       const limitResult = defaultRateLimiter.checkLimit(clientKey, RATE_LIMIT_POLICIES.OBSERVATION_SYNC);
@@ -788,7 +893,7 @@ export async function handleApiRequest(request: Request): Promise<Response | nul
 
       try {
         const { buffer, contentType, cached } = await fetchSatelliteTile(layerParam as "TRUE-COLOR" | "NDVI", z, x, y);
-        return new Response(buffer, {
+        return new Response(new Uint8Array(buffer), {
           status: 200,
           headers: {
             "Content-Type": contentType,
@@ -836,7 +941,7 @@ export async function handleApiRequest(request: Request): Promise<Response | nul
               quality: dbProd.quality,
               unavailable_reason: dbProd.unavailable_reason,
               sensor: dbProd.sensor || "Sentinel-1 C-SAR",
-              orbit_pass: dbProd.orbit_pass,
+              orbit_pass: dbProd.orbit_pass as ("ASCENDING" | "DESCENDING" | "COMBINED" | null),
               temporal_baseline_days: dbProd.temporal_baseline_days,
               temporal_trend: dbProd.temporal_trend || deformation.temporal_trend,
               processing_pipeline: dbProd.processing_pipeline || deformation.processing_pipeline,
@@ -887,7 +992,7 @@ export async function handleApiRequest(request: Request): Promise<Response | nul
               quality: dbProd.quality,
               unavailable_reason: dbProd.unavailable_reason,
               sensor: dbProd.sensor || "Sentinel-1 C-SAR",
-              orbit_pass: dbProd.orbit_pass,
+              orbit_pass: dbProd.orbit_pass as ("ASCENDING" | "DESCENDING" | "COMBINED" | null),
               temporal_baseline_days: dbProd.temporal_baseline_days,
               temporal_trend: dbProd.temporal_trend || cityDeform.deformation.temporal_trend,
               processing_pipeline: dbProd.processing_pipeline || cityDeform.deformation.processing_pipeline,
@@ -943,7 +1048,7 @@ export async function handleApiRequest(request: Request): Promise<Response | nul
                 quality: dbProd.quality,
                 unavailable_reason: dbProd.unavailable_reason,
                 sensor: dbProd.sensor || "Sentinel-1 C-SAR",
-                orbit_pass: dbProd.orbit_pass,
+                orbit_pass: dbProd.orbit_pass as ("ASCENDING" | "DESCENDING" | "COMBINED" | null),
                 temporal_baseline_days: dbProd.temporal_baseline_days,
                 temporal_trend: dbProd.temporal_trend || cityDeform.deformation.temporal_trend,
                 processing_pipeline: dbProd.processing_pipeline || cityDeform.deformation.processing_pipeline,
@@ -1096,7 +1201,7 @@ export async function handleApiRequest(request: Request): Promise<Response | nul
           }
           const job = await createInSarProcessingJob(cellId);
           // In test environment, execute simulated pipeline; in production, dedicated worker claims QUEUED jobs
-          if (process.env.NODE_ENV === "test") {
+          if (process.env["NODE_ENV"] === "test") {
             executeJobPipeline(job.id).catch(() => {});
           }
 
@@ -1265,7 +1370,7 @@ export async function handleApiRequest(request: Request): Promise<Response | nul
           .filter((o) => o.zone_id === z.id)
           .map((o) => ({
             id: o.id,
-            reviewStatus: o.review_status ?? undefined,
+            status: (o as any).status ?? undefined,
             roadStatus: o.road_status ?? undefined,
             visualSigns: o.visual_signs ?? undefined,
             rainfallMm: o.rainfall_mm ?? undefined,
